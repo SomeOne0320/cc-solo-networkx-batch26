@@ -39,6 +39,19 @@ from networkx.utils import not_implemented_for
 __all__ = ["generic_graph_view", "subgraph_view", "reverse_view"]
 
 
+class _ReverseEdgeFilter:
+    """Pickleable adapter that evaluates an edge filter in reverse direction."""
+
+    def __init__(self, filter_edge, multigraph):
+        self.filter_edge = filter_edge
+        self.multigraph = multigraph
+
+    def __call__(self, u, v, key=None):
+        if self.multigraph:
+            return self.filter_edge(v, u, key)
+        return self.filter_edge(v, u)
+
+
 def generic_graph_view(G, create_using=None):
     """Returns a read-only view of `G`.
 
@@ -215,15 +228,9 @@ def subgraph_view(G, *, filter_node=no_filter, filter_edge=no_filter):
     newG._node = FilterAtlas(G._node, filter_node)
     if G.is_multigraph():
         Adj = FilterMultiAdjacency
-
-        def reverse_edge(u, v, k=None):
-            return filter_edge(v, u, k)
-
     else:
         Adj = FilterAdjacency
-
-        def reverse_edge(u, v, k=None):
-            return filter_edge(v, u)
+    reverse_edge = _ReverseEdgeFilter(filter_edge, G.is_multigraph())
 
     if G.is_directed():
         newG._succ = Adj(G._succ, filter_node, filter_edge)

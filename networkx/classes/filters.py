@@ -23,34 +23,58 @@ def no_filter(*items):
     return True
 
 
-def hide_nodes(nodes):
-    """Returns a filter function that hides specific nodes."""
-    nodes = set(nodes)
-    return lambda node: node not in nodes
+class hide_nodes:
+    """Filter class to hide specific nodes."""
+
+    def __init__(self, nodes):
+        # Avoid the attribute name ``nodes``: coreviews uses that attribute as
+        # an inclusion-set optimization for show-style filters.
+        self.hidden_nodes = set(nodes)
+
+    def __call__(self, node):
+        return node not in self.hidden_nodes
 
 
-def hide_diedges(edges):
-    """Returns a filter function that hides specific directed edges."""
-    edges = {(u, v) for u, v in edges}
-    return lambda u, v: (u, v) not in edges
+class hide_diedges:
+    """Filter class to hide specific directed edges."""
+
+    def __init__(self, edges):
+        self.edges = {(u, v) for u, v in edges}
+
+    def __call__(self, u, v):
+        return (u, v) not in self.edges
 
 
-def hide_edges(edges):
-    """Returns a filter function that hides specific undirected edges."""
-    alledges = set(edges) | {(v, u) for (u, v) in edges}
-    return lambda u, v: (u, v) not in alledges
+class hide_edges:
+    """Filter class to hide specific undirected edges."""
+
+    def __init__(self, edges):
+        edges = list(edges)
+        self.edges = set(edges) | {(v, u) for (u, v) in edges}
+
+    def __call__(self, u, v):
+        return (u, v) not in self.edges
 
 
-def hide_multidiedges(edges):
-    """Returns a filter function that hides specific multi-directed edges."""
-    edges = {(u, v, k) for u, v, k in edges}
-    return lambda u, v, k: (u, v, k) not in edges
+class hide_multidiedges:
+    """Filter class to hide specific multi-directed edges."""
+
+    def __init__(self, edges):
+        self.edges = {(u, v, k) for u, v, k in edges}
+
+    def __call__(self, u, v, k):
+        return (u, v, k) not in self.edges
 
 
-def hide_multiedges(edges):
-    """Returns a filter function that hides specific multi-undirected edges."""
-    alledges = set(edges) | {(v, u, k) for (u, v, k) in edges}
-    return lambda u, v, k: (u, v, k) not in alledges
+class hide_multiedges:
+    """Filter class to hide specific multi-undirected edges."""
+
+    def __init__(self, edges):
+        edges = list(edges)
+        self.edges = set(edges) | {(v, u, k) for (u, v, k) in edges}
+
+    def __call__(self, u, v, k):
+        return (u, v, k) not in self.edges
 
 
 # write show_nodes as a class to make SubGraph pickleable
@@ -71,25 +95,43 @@ class show_nodes:
         return node in self.nodes
 
 
-def show_diedges(edges):
-    """Returns a filter function that shows specific directed edges."""
-    edges = {(u, v) for u, v in edges}
-    return lambda u, v: (u, v) in edges
+class show_diedges:
+    """Filter class to show specific directed edges."""
+
+    def __init__(self, edges):
+        self.edges = {(u, v) for u, v in edges}
+
+    def __call__(self, u, v):
+        return (u, v) in self.edges
 
 
-def show_edges(edges):
-    """Returns a filter function that shows specific undirected edges."""
-    alledges = set(edges) | {(v, u) for (u, v) in edges}
-    return lambda u, v: (u, v) in alledges
+class show_edges:
+    """Filter class to show specific undirected edges."""
+
+    def __init__(self, edges):
+        edges = list(edges)
+        self.edges = set(edges) | {(v, u) for (u, v) in edges}
+
+    def __call__(self, u, v):
+        return (u, v) in self.edges
 
 
-def show_multidiedges(edges):
-    """Returns a filter function that shows specific multi-directed edges."""
-    edges = {(u, v, k) for u, v, k in edges}
-    return lambda u, v, k: (u, v, k) in edges
+class show_multidiedges:
+    """Filter class to show specific multi-directed edges."""
+
+    def __init__(self, edges):
+        self.edges = {(u, v, k) for u, v, k in edges}
+
+    def __call__(self, u, v, k):
+        return (u, v, k) in self.edges
 
 
-def show_multiedges(edges):
-    """Returns a filter function that shows specific multi-undirected edges."""
-    alledges = set(edges) | {(v, u, k) for (u, v, k) in edges}
-    return lambda u, v, k: (u, v, k) in alledges
+class show_multiedges:
+    """Filter class to show specific multi-undirected edges."""
+
+    def __init__(self, edges):
+        edges = list(edges)
+        self.edges = set(edges) | {(v, u, k) for (u, v, k) in edges}
+
+    def __call__(self, u, v, k):
+        return (u, v, k) in self.edges

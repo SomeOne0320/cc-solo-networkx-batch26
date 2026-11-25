@@ -350,10 +350,7 @@ class FilterAdjacency(Mapping):  # edgedict
 
     def __getitem__(self, node):
         if node in self._atlas and self.NODE_OK(node):
-
-            def new_node_ok(nbr):
-                return self.NODE_OK(nbr) and self.EDGE_OK(node, nbr)
-
+            new_node_ok = _AdjacencyNodeFilter(node, self.NODE_OK, self.EDGE_OK)
             return FilterAtlas(self._atlas[node], new_node_ok)
         raise KeyError(f"Key {node} not found")
 
@@ -363,6 +360,41 @@ class FilterAdjacency(Mapping):  # edgedict
     def __repr__(self):
         name = self.__class__.__name__
         return f"{name}({self._atlas!r}, {self.NODE_OK!r}, {self.EDGE_OK!r})"
+
+
+class _AdjacencyNodeFilter:
+    """Pickleable node filter used by ``FilterAdjacency.__getitem__``."""
+
+    def __init__(self, node, node_ok, edge_ok):
+        self.node = node
+        self.node_ok = node_ok
+        self.edge_ok = edge_ok
+
+    def __call__(self, nbr):
+        return self.node_ok(nbr) and self.edge_ok(self.node, nbr)
+
+
+class _MultiInnerKeyFilter:
+    """Pickleable key filter used by ``FilterMultiInner.__getitem__``."""
+
+    def __init__(self, nbr, edge_ok):
+        self.nbr = nbr
+        self.edge_ok = edge_ok
+
+    def __call__(self, key):
+        return self.edge_ok(self.nbr, key)
+
+
+class _MultiAdjacencyEdgeFilter:
+    """Pickleable edge filter used by ``FilterMultiAdjacency.__getitem__``."""
+
+    def __init__(self, node, node_ok, edge_ok):
+        self.node = node
+        self.node_ok = node_ok
+        self.edge_ok = edge_ok
+
+    def __call__(self, nbr, key):
+        return self.node_ok(nbr) and self.edge_ok(self.node, nbr, key)
 
 
 class FilterMultiInner(FilterAdjacency):  # muliedge_seconddict
@@ -398,10 +430,7 @@ class FilterMultiInner(FilterAdjacency):  # muliedge_seconddict
 
     def __getitem__(self, nbr):
         if nbr in self._atlas and self.NODE_OK(nbr):
-
-            def new_node_ok(key):
-                return self.EDGE_OK(nbr, key)
-
+            new_node_ok = _MultiInnerKeyFilter(nbr, self.EDGE_OK)
             return FilterAtlas(self._atlas[nbr], new_node_ok)
         raise KeyError(f"Key {nbr} not found")
 
@@ -423,9 +452,6 @@ class FilterMultiAdjacency(FilterAdjacency):  # multiedgedict
 
     def __getitem__(self, node):
         if node in self._atlas and self.NODE_OK(node):
-
-            def edge_ok(nbr, key):
-                return self.NODE_OK(nbr) and self.EDGE_OK(node, nbr, key)
-
+            edge_ok = _MultiAdjacencyEdgeFilter(node, self.NODE_OK, self.EDGE_OK)
             return FilterMultiInner(self._atlas[node], self.NODE_OK, edge_ok)
         raise KeyError(f"Key {node} not found")
