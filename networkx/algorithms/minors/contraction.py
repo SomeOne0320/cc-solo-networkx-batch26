@@ -466,9 +466,13 @@ def contracted_nodes(G, u, v, self_loops=True, copy=True):
 
     Notes
     -----
-    For multigraphs, the edge keys for the realigned edges may
-    not be the same as the edge keys for the old edges. This is
-    natural because edge keys are unique only within each pair of nodes.
+    For multigraphs, an edge keeps its original key whenever that key does
+    not collide with a key already present between its new endpoints. Edges
+    whose key does collide receive, independently for each pair of
+    endpoints, the lowest non-negative integer not yet used as a key for
+    that pair. In undirected graphs the two orientations of a pair share
+    the same set of keys. This is natural because edge keys are unique only
+    within each pair of nodes.
 
     For non-multigraphs where `u` and `v` are adjacent to a third node
     `w`, the edge (`v`, `w`) will be contracted into the edge (`u`,
@@ -499,17 +503,20 @@ def contracted_nodes(G, u, v, self_loops=True, copy=True):
     >>> list(H.edges())
     [(1, 1)]
 
-    In a ``MultiDiGraph`` with a self loop, the in and out edges will
-    be treated separately as edges, so while contracting a node which
-    has a self loop the contraction will add multiple edges:
+    In a ``MultiDiGraph`` a self loop on the contracted-away node is both
+    an in-edge and an out-edge, but it represents a single edge and is
+    therefore only added once after contraction:
 
     >>> G = nx.MultiDiGraph([(1, 2), (2, 2)])
     >>> H = nx.contracted_nodes(G, 1, 2)
-    >>> list(H.edges())  # edge 1->2, 2->2, 2<-2 from the original Graph G
-    [(1, 1), (1, 1), (1, 1)]
+    >>> # (1, 2, 0) becomes the loop (1, 1, 0) and (2, 2, 0) becomes (1, 1, 1)
+    >>> list(H.edges(keys=True))
+    [(1, 1, 0), (1, 1, 1)]
     >>> H = nx.contracted_nodes(G, 1, 2, self_loops=False)
-    >>> list(H.edges())  # edge 2->2, 2<-2 from the original Graph G
-    [(1, 1), (1, 1)]
+    >>> # Only the edge joining distinct nodes 1 and 2 is dropped;
+    >>> # the original self loop (2, 2) is retained once as (1, 1, 0).
+    >>> list(H.edges(keys=True))
+    [(1, 1, 0)]
 
     See Also
     --------
@@ -524,33 +531,79 @@ def contracted_nodes(G, u, v, self_loops=True, copy=True):
         H = G
 
     # edge code uses G.edges(v) instead of G.adj[v] to handle multiedges
-    if H.is_directed():
+    if G.is_multigraph():
+        # Collect every edge incident to v together with its key. In a
+        # directed graph a self-loop on v is reported by both in_edges()
+        # and out_edges(), so de-duplicate by (u, v, key) to keep it once.
+        if H.is_directed():
+            raw_edges = chain(
+                G.in_edges(v, keys=True, data=True),
+                G.out_edges(v, keys=True, data=True),
+            )
+        else:
+            raw_edges = G.edges(v, keys=True, data=True)
+        edges_to_remap = []
+        seen_edge_ids = set()
+        for prev_w, prev_x, key, d in raw_edges:
+            edge_id = (prev_w, prev_x, key)
+            if edge_id in seen_edge_ids:
+                continue
+            seen_edge_ids.add(edge_id)
+            edges_to_remap.append((prev_w, prev_x, key, d))
+    elif H.is_directed():
         edges_to_remap = chain(G.in_edges(v, data=True), G.out_edges(v, data=True))
     else:
         edges_to_remap = G.edges(v, data=True)
 
     # If the H=G, the generators change as H changes
     # This makes the edges_to_remap independent of H
-    if not copy:
+    if not copy and not G.is_multigraph():
         edges_to_remap = list(edges_to_remap)
 
     v_data = H.nodes[v]
     H.remove_node(v)
 
-    for prev_w, prev_x, d in edges_to_remap:
-        w = prev_w if prev_w != v else u
-        x = prev_x if prev_x != v else u
+    if G.is_multigraph():
+        from networkx.relabel import (
+            _canonical_edge_pair,
+            _resolve_merge_keys,
+        )
 
-        if ({prev_w, prev_x} == {u, v}) and not self_loops:
-            continue
+        # Keys of edges that were not incident to v stay where they are and
+        # have priority when keys are reassigned below.
+        occupied_keys = {}
+        for kept_u, kept_v, key in H.edges(keys=True):
+            pair = _canonical_edge_pair(kept_u, kept_v, H.is_directed())
+            occupied_keys.setdefault(pair, set()).add(key)
 
-        if not H.has_edge(w, x) or G.is_multigraph():
-            H.add_edge(w, x, **d)
-        else:
-            if "contraction" in H.edges[(w, x)]:
-                H.edges[(w, x)]["contraction"][(prev_w, prev_x)] = d
+        remapped_edges = []
+        for prev_w, prev_x, key, d in edges_to_remap:
+            # With self_loops=False only the edges that originally joined
+            # the two *distinct* contracted nodes are dropped; original
+            # self-loops (e.g. (v, v)) are always retained.
+            if not self_loops and prev_w != prev_x and {prev_w, prev_x} == {u, v}:
+                continue
+            w = u if prev_w == v else prev_w
+            x = u if prev_x == v else prev_x
+            remapped_edges.append((w, x, key, d))
+
+        new_edges = _resolve_merge_keys(remapped_edges, H.is_directed(), occupied_keys)
+        H.add_edges_from(new_edges)
+    else:
+        for prev_w, prev_x, d in edges_to_remap:
+            w = prev_w if prev_w != v else u
+            x = prev_x if prev_x != v else u
+
+            if ({prev_w, prev_x} == {u, v}) and not self_loops:
+                continue
+
+            if not H.has_edge(w, x):
+                H.add_edge(w, x, **d)
             else:
-                H.edges[(w, x)]["contraction"] = {(prev_w, prev_x): d}
+                if "contraction" in H.edges[(w, x)]:
+                    H.edges[(w, x)]["contraction"][(prev_w, prev_x)] = d
+                else:
+                    H.edges[(w, x)]["contraction"] = {(prev_w, prev_x): d}
 
     if "contraction" in H.nodes[u]:
         H.nodes[u]["contraction"][v] = v_data

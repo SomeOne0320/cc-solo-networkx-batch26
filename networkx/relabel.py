@@ -127,6 +127,91 @@ def relabel_nodes(G, mapping, copy=True):
         return _relabel_inplace(G, m)
 
 
+def _canonical_edge_pair(u, v, directed):
+    """Return a hashable identifier for an endpoint pair.
+
+    For undirected graphs ``(u, v)`` and ``(v, u)`` are the same pair.
+    """
+    return (u, v) if directed else frozenset((u, v))
+
+
+def _resolve_merge_keys(edges, directed, occupied=None):
+    """Resolve multigraph edge keys after endpoints have been merged.
+
+    `edges` is an iterable of ``(u, v, key, data)`` tuples whose endpoints
+    are already the final ones. `occupied`, if provided, maps a canonical
+    endpoint pair (see :func:`_canonical_edge_pair`) to an iterable of keys
+    already present in the destination graph. Those keys have priority and
+    are never reassigned.
+
+    Every edge whose original key does not collide keeps that key. All
+    keys that can be kept are reserved first, so an edge that needs a new
+    key can never take a key another edge could have kept. Colliding edges
+    then receive, independently for each endpoint pair, the lowest free
+    non-negative integer as their new key.
+
+    The returned list contains ``(u, v, key, data)`` tuples in the same
+    order as the input.
+    """
+    used = {}
+    if occupied:
+        for pair, keys in occupied.items():
+            used[pair] = set(keys)
+
+    edge_list = list(edges)
+    pairs = [_canonical_edge_pair(u, v, directed) for u, v, _, _ in edge_list]
+    keep_key = [False] * len(edge_list)
+
+    # Reserve incumbent and original keys that can stay. Processing order
+    # breaks ties when several remapped edges share the same original key.
+    for i, ((_, _, key, _), pair) in enumerate(zip(edge_list, pairs)):
+        keys = used.setdefault(pair, set())
+        if key not in keys:
+            keys.add(key)
+            keep_key[i] = True
+
+    resolved = []
+    for i, ((u, v, key, data), pair) in enumerate(zip(edge_list, pairs)):
+        if keep_key[i]:
+            resolved.append((u, v, key, data))
+            continue
+        keys = used[pair]
+        new_key = 0
+        while new_key in keys:
+            new_key += 1
+        keys.add(new_key)
+        resolved.append((u, v, new_key, data))
+    return resolved
+
+
+def _relabel_multigraph_edges(G, mapping):
+    """Build the globally key-resolved edge list for a multigraph relabel."""
+    directed = G.is_directed()
+    result = [None] * G.number_of_edges()
+    occupied = {}
+    remapped_edges = []
+    remapped_positions = []
+
+    for i, (u, v, key, data) in enumerate(G.edges(keys=True, data=True)):
+        new_u = mapping.get(u, u)
+        new_v = mapping.get(v, v)
+        edge = (new_u, new_v, key, data.copy())
+        if new_u == u and new_v == v:
+            # Endpoints unchanged: this edge stays in place and its key has
+            # priority over edges realigned onto the same endpoint pair.
+            pair = _canonical_edge_pair(new_u, new_v, directed)
+            occupied.setdefault(pair, set()).add(key)
+            result[i] = edge
+        else:
+            remapped_edges.append(edge)
+            remapped_positions.append(i)
+
+    resolved = _resolve_merge_keys(remapped_edges, directed, occupied)
+    for position, edge in zip(remapped_positions, resolved):
+        result[position] = edge
+    return result
+
+
 def _relabel_inplace(G, mapping):
     if len(mapping.keys() & mapping.values()) > 0:
         # labels sets overlap
@@ -147,6 +232,10 @@ def _relabel_inplace(G, mapping):
     multigraph = G.is_multigraph()
     directed = G.is_directed()
 
+    # Resolve all multigraph keys up front, before the graph is mutated, so
+    # that key allocation is global per endpoint pair and matches copy=True.
+    final_multiedges = _relabel_multigraph_edges(G, mapping) if multigraph else None
+
     for old in nodes:
         # Test that old is in both mapping and G, otherwise ignore.
         try:
@@ -157,36 +246,29 @@ def _relabel_inplace(G, mapping):
         if new == old:
             continue
         if multigraph:
-            new_edges = [
-                (new, new if old == target else target, key, data)
-                for (_, target, key, data) in G.edges(old, data=True, keys=True)
+            # Edges are restored in one pass after the node loop below.
+            # Removing the old node also drops its (possibly duplicated, in
+            # directed graphs) incident edges exactly once.
+            G.remove_node(old)
+            continue
+        new_edges = [
+            (new, new if old == target else target, data)
+            for (_, target, data) in G.edges(old, data=True)
+        ]
+        if directed:
+            new_edges += [
+                (new if old == source else source, new, data)
+                for (source, _, data) in G.in_edges(old, data=True)
             ]
-            if directed:
-                new_edges += [
-                    (new if old == source else source, new, key, data)
-                    for (source, _, key, data) in G.in_edges(old, data=True, keys=True)
-                ]
-            # Ensure new edges won't overwrite existing ones
-            seen = set()
-            for i, (source, target, key, data) in enumerate(new_edges):
-                if target in G[source] and key in G[source][target]:
-                    new_key = 0 if not isinstance(key, int | float) else key
-                    while new_key in G[source][target] or (target, new_key) in seen:
-                        new_key += 1
-                    new_edges[i] = (source, target, new_key, data)
-                    seen.add((target, new_key))
-        else:
-            new_edges = [
-                (new, new if old == target else target, data)
-                for (_, target, data) in G.edges(old, data=True)
-            ]
-            if directed:
-                new_edges += [
-                    (new if old == source else source, new, data)
-                    for (source, _, data) in G.in_edges(old, data=True)
-                ]
         G.remove_node(old)
         G.add_edges_from(new_edges)
+
+    if multigraph:
+        # Edges between nodes that were never removed are still present;
+        # clear_edges() leaves the relabeled node order intact. Re-adding
+        # the full resolved edge set makes this equivalent to copy=True.
+        G.clear_edges()
+        G.add_edges_from(final_multiedges)
     return G
 
 
@@ -195,25 +277,7 @@ def _relabel_copy(G, mapping):
     H.add_nodes_from(mapping.get(n, n) for n in G)
     H._node.update((mapping.get(n, n), d.copy()) for n, d in G.nodes.items())
     if G.is_multigraph():
-        new_edges = [
-            (mapping.get(n1, n1), mapping.get(n2, n2), k, d.copy())
-            for (n1, n2, k, d) in G.edges(keys=True, data=True)
-        ]
-
-        # check for conflicting edge-keys
-        undirected = not G.is_directed()
-        seen_edges = set()
-        for i, (source, target, key, data) in enumerate(new_edges):
-            while (source, target, key) in seen_edges:
-                if not isinstance(key, int | float):
-                    key = 0
-                key += 1
-            seen_edges.add((source, target, key))
-            if undirected:
-                seen_edges.add((target, source, key))
-            new_edges[i] = (source, target, key, data)
-
-        H.add_edges_from(new_edges)
+        H.add_edges_from(_relabel_multigraph_edges(G, mapping))
     else:
         H.add_edges_from(
             (mapping.get(n1, n1), mapping.get(n2, n2), d.copy())
